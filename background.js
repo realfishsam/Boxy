@@ -1,5 +1,28 @@
 const BOXY_STYLE_ID = 'boxy-extension-style';
-const BOXY_CSS = '* { border-radius: 0 !important; }';
+const BOXY_CSS = `
+  *, *::before, *::after {
+    border-radius: 0 !important;
+    border-top-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+  
+  input, button, select, textarea {
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
+  }
+  
+  input::-webkit-outer-spin-button,
+  input::-webkit-inner-spin-button {
+    -webkit-appearance: none !important;
+  }
+  
+  :root, html {
+    --border-radius: 0 !important;
+  }
+`;
 
 function isSystemPage(url) {
   return url && (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('moz-extension://'));
@@ -10,6 +33,11 @@ function injectCSSIntoTab(tabId) {
     target: { tabId: tabId },
     func: injectCSS,
     args: [BOXY_STYLE_ID, BOXY_CSS]
+  });
+  
+  chrome.scripting.executeScript({
+    target: { tabId: tabId },
+    func: processImages
   });
 }
 
@@ -29,11 +57,169 @@ function injectCSS(styleId, cssText) {
   style.id = styleId;
   style.textContent = cssText;
   (document.head || document.documentElement).appendChild(style);
+  
+  // Remove inline border-radius from existing elements
+  document.querySelectorAll('*').forEach((el) => {
+    if (el.style.borderRadius) {
+      el.style.setProperty('border-radius', '0', 'important');
+    }
+  });
+  
+  // Watch for new elements and style changes
+  if (!document.body.dataset.boxyObserver) {
+    document.body.dataset.boxyObserver = 'true';
+    new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === 1 && node.style && node.style.borderRadius) {
+            node.style.setProperty('border-radius', '0', 'important');
+          }
+        });
+        if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
+          const target = mutation.target;
+          if (target.style && target.style.borderRadius) {
+            target.style.setProperty('border-radius', '0', 'important');
+          }
+        }
+      });
+    }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+  }
+  
+  if (typeof processImages === 'function') {
+    processImages();
+  }
 }
 
 function removeCSS(styleId) {
   const style = document.getElementById(styleId);
   if (style) style.remove();
+  
+  if (document.body && document.body.dataset.boxyObserver) {
+    delete document.body.dataset.boxyObserver;
+  }
+  
+  if (typeof removeImageWrappers === 'function') {
+    removeImageWrappers();
+  }
+}
+
+function getEdgeColor(img) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = Math.min(img.naturalWidth || img.width, 100);
+  canvas.height = Math.min(img.naturalHeight || img.height, 100);
+  
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  
+  const edgePixels = [];
+  const width = canvas.width;
+  const height = canvas.height;
+  
+  for (let i = 0; i < width; i++) {
+    edgePixels.push(data[(i * 4) + 0], data[(i * 4) + 1], data[(i * 4) + 2]);
+    edgePixels.push(data[((height - 1) * width + i) * 4 + 0], data[((height - 1) * width + i) * 4 + 1], data[((height - 1) * width + i) * 4 + 2]);
+  }
+  for (let i = 0; i < height; i++) {
+    edgePixels.push(data[(i * width) * 4 + 0], data[(i * width) * 4 + 1], data[(i * width) * 4 + 2]);
+    edgePixels.push(data[((i + 1) * width - 1) * 4 + 0], data[((i + 1) * width - 1) * 4 + 1], data[((i + 1) * width - 1) * 4 + 2]);
+  }
+  
+  let r = 0, g = 0, b = 0;
+  for (let i = 0; i < edgePixels.length; i += 3) {
+    r += edgePixels[i];
+    g += edgePixels[i + 1];
+    b += edgePixels[i + 2];
+  }
+  
+  const count = edgePixels.length / 3;
+  return `rgb(${Math.round(r / count)}, ${Math.round(g / count)}, ${Math.round(b / count)})`;
+}
+
+function processImages() {
+  if (document.body.dataset.boxyImageObserver) return;
+  document.body.dataset.boxyImageObserver = 'true';
+  
+  const processImageNode = (img) => {
+    if (img.complete && img.naturalWidth > 0) {
+      processImage(img);
+    } else {
+      img.addEventListener('load', () => processImage(img), { once: true });
+    }
+  };
+  
+  document.querySelectorAll('img:not([data-boxy-processed])').forEach(processImageNode);
+  
+  new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      mutation.addedNodes.forEach((node) => {
+        if (node.nodeType === 1) {
+          if (node.tagName === 'IMG') {
+            processImageNode(node);
+          }
+          const newImages = node.querySelectorAll && node.querySelectorAll('img:not([data-boxy-processed])');
+          if (newImages) {
+            newImages.forEach(processImageNode);
+          }
+        }
+      });
+    });
+  }).observe(document.body, { childList: true, subtree: true });
+}
+
+function processImage(img) {
+  if (img.dataset.boxyProcessed === 'true') return;
+  
+  const computedStyle = window.getComputedStyle(img);
+  const borderRadius = computedStyle.borderRadius;
+  const isRounded = borderRadius && borderRadius !== '0px' && borderRadius !== 'none';
+  
+  const parent = img.parentElement;
+  const parentStyle = parent ? window.getComputedStyle(parent) : null;
+  const parentRounded = parentStyle && parentStyle.borderRadius && parentStyle.borderRadius !== '0px';
+  
+  if (!isRounded && !parentRounded) {
+    img.dataset.boxyProcessed = 'true';
+    return;
+  }
+  
+  try {
+    const edgeColor = getEdgeColor(img);
+    const wrapper = document.createElement('div');
+    wrapper.setAttribute('data-boxy-wrapper', 'true');
+    wrapper.style.display = 'inline-block';
+    wrapper.style.backgroundColor = edgeColor;
+    wrapper.style.padding = '0';
+    wrapper.style.margin = '0';
+    wrapper.style.verticalAlign = 'middle';
+    
+    const maxDim = Math.max(img.width || img.offsetWidth || 0, img.height || img.offsetHeight || 0);
+    if (maxDim > 0) {
+      wrapper.style.width = maxDim + 'px';
+      wrapper.style.height = maxDim + 'px';
+      wrapper.style.display = 'flex';
+      wrapper.style.alignItems = 'center';
+      wrapper.style.justifyContent = 'center';
+    }
+    
+    img.parentNode.insertBefore(wrapper, img);
+    wrapper.appendChild(img);
+    img.dataset.boxyProcessed = 'true';
+  } catch (e) {
+    img.dataset.boxyProcessed = 'true';
+  }
+}
+
+function removeImageWrappers() {
+  document.querySelectorAll('[data-boxy-wrapper]').forEach((wrapper) => {
+    const img = wrapper.querySelector('img');
+    if (img) {
+      wrapper.parentNode.insertBefore(img, wrapper);
+      wrapper.remove();
+      delete img.dataset.boxyProcessed;
+    }
+  });
 }
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -57,4 +243,3 @@ chrome.runtime.onMessage.addListener((message) => {
     });
   }
 });
-

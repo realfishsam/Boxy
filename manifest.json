@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Boxy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Boxy, brings back the sharp, boxy web you remember.",
   "permissions": ["management", "storage", "tabs", "scripting"],
   "host_permissions": ["<all_urls>"],
