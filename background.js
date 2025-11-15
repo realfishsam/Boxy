@@ -21,6 +21,19 @@ const BOXY_CSS = `
   
   :root, html {
     --border-radius: 0 !important;
+    --radius: 0 !important;
+    --border-radius-sm: 0 !important;
+    --border-radius-md: 0 !important;
+    --border-radius-lg: 0 !important;
+    --border-radius-xl: 0 !important;
+    --border-radius-2xl: 0 !important;
+    --border-radius-full: 0 !important;
+    --rounded-sm: 0 !important;
+    --rounded-md: 0 !important;
+    --rounded-lg: 0 !important;
+    --rounded-xl: 0 !important;
+    --rounded-2xl: 0 !important;
+    --rounded-full: 0 !important;
   }
 `;
 
@@ -50,6 +63,31 @@ function removeCSSFromTab(tabId) {
 }
 
 function injectCSS(styleId, cssText) {
+  function forceBoxyStyle(element) {
+    if (!element || element.nodeType !== 1) return;
+    
+    const computedStyle = window.getComputedStyle(element);
+    const borderRadius = computedStyle.borderRadius;
+    
+    if (borderRadius && borderRadius !== '0px' && borderRadius !== 'none' && borderRadius !== '0') {
+      element.style.setProperty('border-radius', '0', 'important');
+      element.style.setProperty('border-top-left-radius', '0', 'important');
+      element.style.setProperty('border-top-right-radius', '0', 'important');
+      element.style.setProperty('border-bottom-left-radius', '0', 'important');
+      element.style.setProperty('border-bottom-right-radius', '0', 'important');
+    }
+    
+    if (element.style.borderRadius) {
+      element.style.setProperty('border-radius', '0', 'important');
+    }
+  }
+
+  function scanAndFixElements() {
+    document.querySelectorAll('*').forEach((el) => {
+      forceBoxyStyle(el);
+    });
+  }
+
   const existingStyle = document.getElementById(styleId);
   if (existingStyle) existingStyle.remove();
   
@@ -58,31 +96,56 @@ function injectCSS(styleId, cssText) {
   style.textContent = cssText;
   (document.head || document.documentElement).appendChild(style);
   
-  // Remove inline border-radius from existing elements
-  document.querySelectorAll('*').forEach((el) => {
-    if (el.style.borderRadius) {
-      el.style.setProperty('border-radius', '0', 'important');
-    }
-  });
+  scanAndFixElements();
   
-  // Watch for new elements and style changes
   if (!document.body.dataset.boxyObserver) {
     document.body.dataset.boxyObserver = 'true';
-    new MutationObserver((mutations) => {
+    
+    const mutationObserver = new MutationObserver((mutations) => {
       mutations.forEach((mutation) => {
         mutation.addedNodes.forEach((node) => {
-          if (node.nodeType === 1 && node.style && node.style.borderRadius) {
-            node.style.setProperty('border-radius', '0', 'important');
+          if (node.nodeType === 1) {
+            forceBoxyStyle(node);
+            if (node.querySelectorAll) {
+              node.querySelectorAll('*').forEach(forceBoxyStyle);
+            }
           }
         });
-        if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
-          const target = mutation.target;
-          if (target.style && target.style.borderRadius) {
-            target.style.setProperty('border-radius', '0', 'important');
+        if (mutation.type === 'attributes') {
+          if (mutation.attributeName === 'style' || mutation.attributeName === 'class') {
+            forceBoxyStyle(mutation.target);
           }
         }
       });
-    }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+    });
+    
+    mutationObserver.observe(document.body, { 
+      childList: true, 
+      subtree: true, 
+      attributes: true, 
+      attributeFilter: ['style', 'class'] 
+    });
+    
+    const styleObserver = new MutationObserver(() => {
+      setTimeout(scanAndFixElements, 100);
+    });
+    
+    if (document.head) {
+      styleObserver.observe(document.head, { 
+        childList: true, 
+        subtree: true 
+      });
+    }
+    
+    const periodicCheck = setInterval(() => {
+      if (!document.body.dataset.boxyObserver) {
+        clearInterval(periodicCheck);
+        return;
+      }
+      scanAndFixElements();
+    }, 1000);
+    
+    document.body.dataset.boxyPeriodicCheck = periodicCheck;
   }
   
   if (typeof processImages === 'function') {
@@ -96,6 +159,11 @@ function removeCSS(styleId) {
   
   if (document.body && document.body.dataset.boxyObserver) {
     delete document.body.dataset.boxyObserver;
+    
+    if (document.body.dataset.boxyPeriodicCheck) {
+      clearInterval(document.body.dataset.boxyPeriodicCheck);
+      delete document.body.dataset.boxyPeriodicCheck;
+    }
   }
   
   if (typeof removeImageWrappers === 'function') {
